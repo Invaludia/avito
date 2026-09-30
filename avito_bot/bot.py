@@ -1,0 +1,175 @@
+"""Telegram-бот: дерево кнопок из таблицы, объявления, уведомления о новых."""
+from __future__ import annotations
+
+import asyncio
+import html
+import logging
+import os
+import time
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart, Command
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from dotenv import load_dotenv
+
+from . import catalog
+from .avito import AvitoClient, Blocked
+from .db import DB
+
+log = logging.getLogger("avito_bot")
+
+
+class App:
+    def __init__(self):
+        load_dotenv()
+        self.source = os.environ.get("CATALOG", "avito_catalog.xlsx")
+        self.allowed = {int(x) for x in os.environ.get("ALLOWED_USERS", "").replace(" ", "").split(",") if x}
+        self.db = DB(os.environ.get("DB_PATH", "avito.sqlite3"))
+        self.client = AvitoClient()
+        self.bot = Bot(os.environ["BOT_TOKEN"])
+        self.dp = Dispatcher()
+        self.reload()
+        self._register()
+
+    def reload(self):
+        items, self.settings = catalog.load(self.source)
+        self.tree = catalog.Tree(items)
+        log.info("каталог: %d моделей", len(items))
+
+    def ok(self, user_id: int) -> bool:
+        return not self.allowed or user_id in self.allowed
+
+    # ---------- клавиатуры ----------
+    def menu(self, node: catalog.Node) -> tuple[str, InlineKeyboardMarkup]:
+        rows, row = [], []
+        for child in node.children.values():
+            row.append(InlineKeyboardButton(text=child.title, callback_data=f"n:{child.id}"))
+            if len(row) == (2 if len(node.children) > 4 else 1):
+                rows.append(row); row = []
+        if row: rows.append(row)
+        if node.item and node.children:
+            rows.insert(0, [InlineKeyboardButton(text=f"Объявления: {node.title}", callback_data=f"i:{node.id}")])
+        if node.parent:
+            rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"n:{node.parent.id}"),
+                         InlineKeyboardButton(text="В начало", callback_data="n:root")])
+        title = " → ".join(node.path) or "Что ищем?"
+        return html.escape(title), InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def listings_view(self, node: catalog.Node) -> tuple[str, InlineKeyboardMarkup]:
+        it = node.item
+        s = self.settings
+        rows = self.db.top(it.key, s.show_count, s.sort_by_price)
+        price = ""
+        if it.price_min or it.price_max:
+            fmt = lambda v: f"{v:,}".replace(",", " ") if v else "∞"
+            price = f"\nЦена: {fmt(it.price_min) if it.price_min else 0} – {fmt(it.price_max)} ₽"
+        head = f"<b>{html.escape(' → '.join(it.path))}</b>{price}\n"
+        checked = self.db.checked_at(it.key)
+        if checked is None:
+            body = "\nЕщё не проверял. Нажми «Обновить»."
+        elif not rows:
+            body = "\nПодходящих объявлений сейчас нет."
+        else:
+            lines = []
+            for i, (title, p, url, place) in enumerate(rows, 1):
+                ps = f"{p:,} ₽".replace(",", " ") if p else "цена не указана"
+                lines.append(f'{i}. <a href="{html.escape(url)}">{html.escape(title)}</a> — <b>{ps}</b>'
+                             + (f"\n    {html.escape(place)}" if place else ""))
+            body = "\n" + "\n".join(lines)
+        if checked:
+            body += f"\n\n<i>Проверено {int((time.time() - checked) // 60)} мин назад</i>"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"r:{node.id}")],
+            [InlineKeyboardButton(text="← Назад", callback_data=f"n:{node.parent.id}"),
+             InlineKeyboardButton(text="В начало", callback_data="n:root")],
+        ])
+        return head + body, kb
+
+    # ---------- обработчики ----------
+    def _register(self):
+        dp = self.dp
+
+        @dp.message(CommandStart())
+        async def start(m: Message):
+            if not self.ok(m.from_user.id):
+                return await m.answer(f"Нет доступа. Твой id: {m.from_user.id}")
+            text, kb = self.menu(self.tree.root)
+            await m.answer(text, reply_markup=kb, parse_mode="HTML")
+
+        @dp.message(Command("reload"))
+        async def reload_cmd(m: Message):
+            if not self.ok(m.from_user.id): return
+            await asyncio.to_thread(self.reload)
+            await m.answer(f"Таблица перечитана, моделей: {len(self.tree.items)}")
+
+        @dp.callback_query(F.data.startswith(("n:", "i:", "r:")))
+        async def nav(c: CallbackQuery):
+            if not self.ok(c.from_user.id):
+                return await c.answer("Нет доступа")
+            kind, nid = c.data.split(":", 1)
+            node = self.tree.get(nid)
+            if node is None:
+                await c.answer("Таблица изменилась, начни заново")
+                node = self.tree.root; kind = "n"
+            if kind == "r" and node.item:
+                await c.answer("Ищу на Авито…")
+                try:
+                    await self.check(node.item, notify=False)
+                except Blocked:
+                    await c.message.answer("Авито временно ограничил запросы, попробую позже.")
+            elif kind == "n" and not node.children and node.item:
+                kind = "i"
+            if kind in ("i", "r") and node.item:
+                text, kb = self.listings_view(node)
+            else:
+                text, kb = self.menu(node)
+            await c.message.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+            await c.answer()
+
+    # ---------- парсинг ----------
+    async def check(self, item: catalog.Item, notify: bool = True):
+        found = await self.client.search(item, self.settings)
+        new = self.db.save(item.key, found)
+        if notify and new and self.settings.notify:
+            for l in new:
+                ps = f"{l.price:,} ₽".replace(",", " ") if l.price else "цена не указана"
+                text = (f"🆕 <b>{html.escape(item.model)}</b>\n<a href=\"{html.escape(l.url)}\">"
+                        f"{html.escape(l.title)}</a> — <b>{ps}</b>")
+                for uid in self.allowed:
+                    await self.bot.send_message(uid, text, parse_mode="HTML")
+
+    async def loop(self):
+        while True:
+            try:
+                await asyncio.to_thread(self.reload)
+            except Exception:
+                log.exception("не удалось прочитать таблицу, работаю со старой")
+            for item in list(self.tree.items.values()):
+                try:
+                    await self.check(item)
+                except Blocked as e:
+                    log.warning("Авито ограничил доступ (%s), пауза 30 минут", e)
+                    for uid in self.allowed:
+                        await self.bot.send_message(uid, "⚠️ Авито показал капчу, делаю паузу 30 минут.")
+                    await asyncio.sleep(1800)
+                    break
+                except Exception:
+                    log.exception("ошибка при проверке %s", item.model)
+            await asyncio.sleep(self.settings.interval_min * 60)
+
+    async def run(self):
+        task = asyncio.create_task(self.loop())
+        try:
+            await self.dp.start_polling(self.bot)
+        finally:
+            task.cancel()
+            await self.client.close()
+
+
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    asyncio.run(App().run())
+
+
+if __name__ == "__main__":
+    main()
