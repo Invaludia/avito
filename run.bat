@@ -1,6 +1,10 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
+if exist .git (
+  echo Проверяю обновления...
+  git pull --ff-only || echo Не удалось обновиться, запускаю текущую версию.
+)
 if not exist .env (
   set /p TOKEN=Вставь токен бота от BotFather и нажми Enter: 
   call :mkenv
