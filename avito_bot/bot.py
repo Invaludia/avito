@@ -122,8 +122,8 @@ class App:
                 await c.answer("Ищу на Авито…")
                 try:
                     await self.check(node.item, notify=False)
-                except Blocked:
-                    await c.message.answer("Авито временно ограничил запросы, попробую позже.")
+                except Blocked as e:
+                    await c.message.answer(f"Авито временно ограничил запросы ({e}), попробую позже.")
             elif kind == "n" and not node.children and node.item:
                 kind = "i"
             if kind in ("i", "r") and node.item:
@@ -146,6 +146,7 @@ class App:
                     await self.bot.send_message(uid, text, parse_mode="HTML")
 
     async def loop(self):
+        await asyncio.sleep(120)  # не начинать обход сразу при запуске
         while True:
             try:
                 await asyncio.to_thread(self.reload)
@@ -157,7 +158,7 @@ class App:
                 except Blocked as e:
                     log.warning("Авито ограничил доступ (%s), пауза 30 минут", e)
                     for uid in self.allowed:
-                        await self.bot.send_message(uid, "⚠️ Авито показал капчу, делаю паузу 30 минут.")
+                        await self.bot.send_message(uid, f"⚠️ Авито ограничил запросы ({e}), делаю паузу 30 минут.")
                     await asyncio.sleep(1800)
                     break
                 except Exception:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import re
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from bs4 import BeautifulSoup
 
 from .catalog import Item, Settings
 
+log = logging.getLogger("avito_bot")
 BASE = "https://www.avito.ru"
 DEFAULT_SECTIONS = {
     "видеокарты": "tovary_dlya_kompyutera/komplektuyuschie/videokarty",
@@ -62,8 +64,6 @@ def _to_price(v) -> int | None:
 
 
 def parse_listings(html: str) -> list[Listing]:
-    if _looks_blocked(html):
-        raise Blocked("капча или ограничение доступа")
     soup = BeautifulSoup(html, "html.parser")
     out = []
     for card in soup.select('[data-marker="item"]'):
@@ -88,12 +88,15 @@ def parse_listings(html: str) -> list[Listing]:
             place=place.get_text(" ", strip=True) if place else "",
             date=date.get_text(" ", strip=True) if date else "",
         ))
+    if not out and _looks_blocked(html):
+        raise Blocked("страница с капчей или ограничением доступа")
     return out
 
 
 def _looks_blocked(html: str) -> bool:
-    low = html[:20000].lower()
-    return any(s in low for s in ("доступ ограничен", "captcha", "firewall-title", "проблема с ip"))
+    # Проверяем только когда карточек нет: слово captcha встречается и в скриптах обычной выдачи
+    low = html.lower()
+    return any(s in low for s in ("доступ ограничен", "firewall-title", "проблема с ip", "geetest", "captcha-container"))
 
 
 def _has_word(text: str, word: str) -> bool:
@@ -132,18 +135,46 @@ class AvitoClient:
     async def fetch(self, url: str) -> str:
         from curl_cffi.requests import AsyncSession
         async with self._lock:
+            headers = {"Accept-Language": "ru-RU,ru;q=0.9"}
             if self._session is None:
                 self._session = AsyncSession(impersonate="chrome", timeout=30)
-            resp = await self._session.get(url, headers={"Accept-Language": "ru-RU,ru;q=0.9"})
+                # Сначала главная страница, как у обычного посетителя: Авито выдаёт cookies
+                await self._session.get(BASE + "/", headers=headers)
+                await asyncio.sleep(random.uniform(2, 4))
+            resp = await self._session.get(url, headers=headers)
             await asyncio.sleep(random.uniform(self.min_delay, self.max_delay))
+        log.info("Авито %s -> HTTP %s, %d байт", url, resp.status_code, len(resp.text))
         if resp.status_code in (403, 429):
+            self._dump(resp.text)
+            await self.reset()
             raise Blocked(f"HTTP {resp.status_code}")
         resp.raise_for_status()
         return resp.text
 
+    def _dump(self, html: str):
+        try:
+            with open("last_block.html", "w", encoding="utf-8") as f:
+                f.write(html)
+        except OSError:
+            pass
+
+    async def reset(self):
+        """Новая сессия (новые cookies) после блокировки."""
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
+
     async def search(self, item: Item, settings: Settings) -> list[Listing]:
         html = await self.fetch(search_url(item, settings))
-        return [l for l in parse_listings(html) if accept(l, item, settings)]
+        try:
+            found = parse_listings(html)
+        except Blocked:
+            self._dump(html)
+            await self.reset()
+            raise
+        ok = [l for l in found if accept(l, item, settings)]
+        log.info("%s: карточек %d, подошло %d", item.model, len(found), len(ok))
+        return ok
 
     async def close(self):
         if self._session is not None:
