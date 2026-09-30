@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 from dataclasses import dataclass, field
 from urllib.request import urlopen
 
@@ -30,9 +31,13 @@ def split_words(value) -> list[str]:
 
 
 def to_int(value) -> int | None:
-    if value is None or str(value).strip() == "":
+    if value is None or isinstance(value, bool):
         return None
-    digits = "".join(ch for ch in str(value) if ch.isdigit())
+    if isinstance(value, (int, float)):  # из xlsx числа приходят как 16000.0
+        return int(value)
+    text = re.sub(r"[\s\u00a0\u202f₽р.]*$", "", str(value).strip().lower())
+    text = re.sub(r"[.,]\d{1,2}$", "", text)  # копейки / «16000.0»
+    digits = "".join(ch for ch in text if ch.isdigit())
     return int(digits) if digits else None
 
 

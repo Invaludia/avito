@@ -117,3 +117,10 @@ def test_accessories_and_reserved():
     assert not accept(L("RTX 4060 Palit", 20000, text="уже забронирована до вечера"), it, s2)
     assert not accept(L("Куплю RTX 4060", 20000), it, s2)
     assert accept(L("RTX 4060 Palit", 20000, text="без брони, свободна"), it, s2)
+
+
+def test_prices_from_google_export():
+    assert catalog.to_int(16000.0) == 16000
+    assert catalog.to_int("16 000") == 16000
+    assert catalog.to_int("16000.0") == 16000
+    assert catalog.to_int("16 000 ₽") == 16000
