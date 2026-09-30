@@ -86,7 +86,9 @@ def test_db_new_only_after_first_run(tmp_path):
     a, b = Listing("1", "a", 1, "u1"), Listing("2", "b", 2, "u2")
     assert db.save("k", [a]) == []          # первый проход: без уведомлений
     assert [l.id for l in db.save("k", [a, b])] == ["2"]
-    assert len(db.top("k", 10, True)) == 2
+    assert len(db.rows("k")) == 2
+    db.set_detail("2", False, "бронь")
+    assert [l.id for l in db.rows("k")] == ["1"]
 
 
 def test_real_table_rows():
@@ -124,3 +126,36 @@ def test_prices_from_google_export():
     assert catalog.to_int("16 000") == 16000
     assert catalog.to_int("16000.0") == 16000
     assert catalog.to_int("16 000 ₽") == 16000
+
+
+def test_detail_page():
+    from avito_bot.avito import check_detail
+    page = lambda status, desc: (f'<html><body><h1>RTX 3060</h1><div>{status}</div>'
+                                 f'<div data-marker="item-view/item-description">{desc}</div>'
+                                 f'<script>var x="зарезервирован"</script></body></html>')
+    assert check_detail(page("", "Карта в идеале, без артефактов"), settings) == (True, "")
+    assert not check_detail(page("Зарезервирован", "Карта в идеале"), settings)[0]
+    assert not check_detail(page("", "Работала в майнинге, есть артефакты при нагрузке"), settings)[0]
+    assert not check_detail(page("", "Уже продана, спасибо"), settings)[0]
+    assert check_detail(page("Продано 25 товаров", "Карта в идеале"), settings)[0]
+
+
+def test_display_refilters_stale_rows(tmp_path):
+    import os
+    os.environ["BOT_TOKEN"] = "1:a"
+    from avito_bot.bot import App
+    from avito_bot.db import DB
+    a = App.__new__(App)
+    a.fallback = False
+    a.tree = catalog.Tree(items)
+    a.settings = settings
+    a.db = DB(str(tmp_path / "d.db"))
+    n = a.tree.root
+    for t in ["Видеокарты", "NVIDIA", "RTX", "40", "4060", "RTX 4060"]:
+        n = n.children[t]
+    it = n.items[0]
+    a.db.save(it.key, [Listing("1", "Коробка от видеокарты RTX 4060", 300, "https://www.avito.ru/sankt-peterburg/a/b_1"),
+                       Listing("2", "RTX 4060 Palit", 20000, "https://www.avito.ru/sankt-peterburg/a/b_2"),
+                       Listing("3", "RTX 4060 MSI", 90000, "https://www.avito.ru/sankt-peterburg/a/b_3")])
+    text, _ = a.listings_view(n)
+    assert "Palit" in text and "Коробка" not in text and "MSI" not in text

@@ -189,6 +189,32 @@ def accept(listing: Listing, item: Item, settings: Settings) -> bool:
     return True
 
 
+# Статус в шапке страницы (там же бывает «Продано N товаров» у продавца, поэтому «продано» ищем только в описании)
+RESERVED_HEAD = ["зарезервирован", "в резерве", "забронирован", "снято с публикации", "объявление снято"]
+RESERVED_DESC = RESERVED_HEAD + ["бронь", "продано", "продана", "товар продан"]
+
+
+def check_detail(html: str, settings: Settings) -> tuple[bool, str]:
+    """Страница объявления: бронь / продано по шапке страницы, дефекты — по полному описанию."""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    desc_el = soup.select_one('[data-marker="item-view/item-description"]') or soup.select_one('[itemprop="description"]')
+    desc = _norm_mem(desc_el.get_text(" ", strip=True)) if desc_el else ""
+    # Шапка страницы (заголовок, цена, статус) — до блока «похожие объявления»
+    head = soup.get_text(" ", strip=True).lower()[:6000]
+    for w in RESERVED_HEAD:
+        if _has_stop(head, w):
+            return False, w
+    for w in RESERVED_DESC:
+        if _has_stop(desc, w):
+            return False, w
+    for w in settings.stop_words:
+        if _has_stop(desc, w):
+            return False, w
+    return True, ""
+
+
 class AvitoClient:
     """Медленный клиент: пауза между запросами, один запрос за раз."""
 
@@ -243,6 +269,12 @@ class AvitoClient:
             log.info("%s: отброшены объявления из других мест: %s", item.title, ", ".join(other))
         log.info("%s: карточек %d, подошло %d", item.title, len(found), len(ok))
         return ok
+
+    async def details(self, listing: Listing, settings: Settings) -> tuple[bool, str]:
+        html = await self.fetch(listing.url)
+        ok, reason = check_detail(html, settings)
+        log.info("Страница %s: %s", listing.url, "ок" if ok else f"отброшено ({reason})")
+        return ok, reason
 
     async def close(self):
         if self._session is not None:

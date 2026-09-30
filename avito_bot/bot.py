@@ -13,7 +13,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from dotenv import load_dotenv
 
 from . import catalog
-from .avito import Blocked, make_client
+from .avito import Blocked, accept, make_client
 from .db import DB
 
 log = logging.getLogger("avito_bot")
@@ -92,9 +92,10 @@ class App:
                 head += f"{label}{fmt(it.price_min) if it.price_min else 0} – {fmt(it.price_max) if it.price_max else '∞'} ₽\n"
         rows = []
         for it in node.items:
-            rows += [(r, it.variant) for r in self.db.top(it.key, s.show_count, s.sort_by_price)]
-        if s.sort_by_price:
-            rows.sort(key=lambda x: (x[0][1] is None, x[0][1] or 0))
+            # Фильтры применяем и при показе: после правок таблицы старые объявления из базы тоже отсекаются
+            rows += [((l.title, l.price, l.url, l.place), it.variant)
+                     for l in self.db.rows(it.key) if accept(l, it, s)]
+        rows.sort(key=lambda x: (x[0][1] is None, x[0][1] or 0))
         rows = rows[:s.show_count]
         checked = [c for c in (self.db.checked_at(it.key) for it in node.items) if c]
         if not checked:
@@ -164,7 +165,7 @@ class App:
                 await c.answer("Ищу на Авито…")
                 try:
                     for it in node.items:
-                        await self.check(it, notify=False)
+                        await self.check(it, notify=False, detail_limit=4)
                 except Blocked as e:
                     await c.message.answer(f"Авито временно ограничил запросы ({e}). Если на компьютере открыто окно браузера с капчей, реши её и нажми «Обновить» ещё раз.")
             elif kind == "n" and not node.children and node.items:
@@ -177,9 +178,23 @@ class App:
             await c.answer()
 
     # ---------- парсинг ----------
-    async def check(self, item: catalog.Item, notify: bool = True):
+    async def check(self, item: catalog.Item, notify: bool = True, detail_limit: int = 8):
         found = await self.client.search(item, self.settings)
+        # Страницу каждого объявления открываем один раз: бронь, «продано», дефекты в полном описании.
+        # За раз проверяем не больше detail_limit, остальные — в следующий проход
+        todo = [l for l in found if self.db.detail(l.id) is None][:detail_limit]
+        for l in todo:
+            try:
+                ok, reason = await self.client.details(l, self.settings)
+            except Blocked:
+                raise
+            except Exception as e:
+                log.warning("Не открылась страница %s: %s", l.url, e)
+                continue
+            self.db.set_detail(l.id, ok, reason)
+        found = [l for l in found if self.db.detail(l.id) != 0]
         new = self.db.save(item.key, found)
+        new = [l for l in new if self.db.detail(l.id) == 1]  # уведомляем только о проверенных
         if notify and new and self.settings.notify:
             for l in new:
                 ps = f"{l.price:,} ₽".replace(",", " ") if l.price else "цена не указана"
