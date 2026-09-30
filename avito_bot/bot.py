@@ -22,6 +22,7 @@ log = logging.getLogger("avito_bot")
 
 class App:
     def __init__(self):
+        self.lock = asyncio.Lock()  # /scan и фоновый обход не лезут в браузер одновременно
         load_dotenv()
         self.source = os.environ.get("CATALOG", "avito_catalog.xlsx")
         self.allowed = {int(x) for x in os.environ.get("ALLOWED_USERS", "").replace(" ", "").split(",") if x}
@@ -140,14 +141,40 @@ class App:
         @dp.message(Command("scan"))
         async def scan_cmd(m: Message):
             if not self.ok(m.from_user.id): return
-            items = list(self.tree.items.values())
-            await m.answer(f"Сканирую рынок: {len(items)} позиций, это займёт пару минут…")
+            # Сначала перечитываем таблицу, чтобы свежие цены сразу пошли в дело
             try:
-                text = await self.scan(items)
-            except Blocked as e:
-                text = f"Авито ограничил запросы ({e}). Попробуй позже или пройди проверку в окне Chrome."
-            for part in _chunks(text):
-                await m.answer(part, parse_mode="HTML", disable_web_page_preview=True)
+                await asyncio.to_thread(self.reload)
+            except Exception:
+                log.exception("не удалось перечитать таблицу перед /scan")
+            items = list(self.tree.items.values())
+            await m.answer(f"Таблица перечитана. Сканирую рынок: {len(items)} позиций, это займёт несколько минут…")
+            async with self.lock:
+                try:
+                    text = await self.scan(items)
+                except Blocked as e:
+                    text = f"Авито ограничил запросы ({e}). Попробуй позже или пройди проверку в окне Chrome."
+                    for part in _chunks(text):
+                        await m.answer(part, parse_mode="HTML")
+                    return
+                for part in _chunks(text):
+                    await m.answer(part, parse_mode="HTML", disable_web_page_preview=True)
+                # Затем полный проход: открываем страницы подходящих объявлений и проверяем описание
+                await m.answer("Теперь проверяю страницы подходящих объявлений (бронь, дефекты, описание)…")
+                lines = []
+                for item in items:
+                    try:
+                        await self.check(item, notify=False, detail_limit=10)
+                    except Blocked as e:
+                        lines.append(f"⚠️ Авито ограничил запросы ({e}), остановился.")
+                        break
+                    except Exception:
+                        log.exception("ошибка при проверке %s", item.title)
+                    good = [l for l in self.db.rows(item.key) if accept(l, item, self.settings)]
+                    best = min((l.price for l in good if l.price), default=None)
+                    tail = f", от {best:,} ₽".replace(",", " ") if best else ""
+                    lines.append(f"{'✅' if good else '▫️'} {html.escape(item.title)}: {len(good)} шт.{tail}")
+                await m.answer("<b>Проверенные подходящие объявления</b>\n" + "\n".join(lines)
+                               + "\n\nСсылки: /start → модель.", parse_mode="HTML")
 
         @dp.message(Command("table"))
         async def table_cmd(m: Message):
@@ -252,7 +279,8 @@ class App:
                 log.exception("не удалось прочитать таблицу, работаю со старой")
             for item in list(self.tree.items.values()):
                 try:
-                    await self.check(item)
+                    async with self.lock:
+                        await self.check(item)
                 except Blocked as e:
                     log.warning("Авито ограничил доступ (%s), пауза 30 минут", e)
                     for uid in self.allowed:
