@@ -54,7 +54,7 @@ class App:
             if len(row) == (2 if len(node.children) > 4 else 1):
                 rows.append(row); row = []
         if row: rows.append(row)
-        if node.item and node.children:
+        if node.items and node.children:
             rows.insert(0, [InlineKeyboardButton(text=f"Объявления: {node.title}", callback_data=f"i:{node.id}")])
         if node.parent:
             rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"n:{node.parent.id}"),
@@ -63,28 +63,34 @@ class App:
         return html.escape(title), InlineKeyboardMarkup(inline_keyboard=rows)
 
     def listings_view(self, node: catalog.Node) -> tuple[str, InlineKeyboardMarkup]:
-        it = node.item
         s = self.settings
-        rows = self.db.top(it.key, s.show_count, s.sort_by_price)
-        price = ""
-        if it.price_min or it.price_max:
-            fmt = lambda v: f"{v:,}".replace(",", " ") if v else "∞"
-            price = f"\nЦена: {fmt(it.price_min) if it.price_min else 0} – {fmt(it.price_max)} ₽"
-        head = f"<b>{html.escape(' → '.join(it.path))}</b>{price}\n"
-        checked = self.db.checked_at(it.key)
-        if checked is None:
+        fmt = lambda v: f"{v:,}".replace(",", " ")
+        head = f"<b>{html.escape(' → '.join(node.path))}</b>\n"
+        for it in node.items:
+            if it.price_min or it.price_max:
+                label = f"{html.escape(it.variant)}: " if it.variant else "Цена: "
+                head += f"{label}{fmt(it.price_min) if it.price_min else 0} – {fmt(it.price_max) if it.price_max else '∞'} ₽\n"
+        rows = []
+        for it in node.items:
+            rows += [(r, it.variant) for r in self.db.top(it.key, s.show_count, s.sort_by_price)]
+        if s.sort_by_price:
+            rows.sort(key=lambda x: (x[0][1] is None, x[0][1] or 0))
+        rows = rows[:s.show_count]
+        checked = [c for c in (self.db.checked_at(it.key) for it in node.items) if c]
+        if not checked:
             body = "\nЕщё не проверял. Нажми «Обновить»."
         elif not rows:
             body = "\nПодходящих объявлений сейчас нет."
         else:
             lines = []
-            for i, (title, p, url, place) in enumerate(rows, 1):
-                ps = f"{p:,} ₽".replace(",", " ") if p else "цена не указана"
-                lines.append(f'{i}. <a href="{html.escape(url)}">{html.escape(title)}</a> — <b>{ps}</b>'
+            for i, ((title, p, url, place), variant) in enumerate(rows, 1):
+                ps = f"{fmt(p)} ₽" if p else "цена не указана"
+                tag = f" [{html.escape(variant)}]" if variant else ""
+                lines.append(f'{i}. <a href="{html.escape(url)}">{html.escape(title)}</a>{tag} — <b>{ps}</b>'
                              + (f"\n    {html.escape(place)}" if place else ""))
             body = "\n" + "\n".join(lines)
         if checked:
-            body += f"\n\n<i>Проверено {int((time.time() - checked) // 60)} мин назад</i>"
+            body += f"\n\n<i>Проверено {int((time.time() - min(checked)) // 60)} мин назад</i>"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"r:{node.id}")],
             [InlineKeyboardButton(text="← Назад", callback_data=f"n:{node.parent.id}"),
@@ -118,15 +124,16 @@ class App:
             if node is None:
                 await c.answer("Таблица изменилась, начни заново")
                 node = self.tree.root; kind = "n"
-            if kind == "r" and node.item:
+            if kind == "r" and node.items:
                 await c.answer("Ищу на Авито…")
                 try:
-                    await self.check(node.item, notify=False)
+                    for it in node.items:
+                        await self.check(it, notify=False)
                 except Blocked as e:
                     await c.message.answer(f"Авито временно ограничил запросы ({e}). Если на компьютере открыто окно браузера с капчей, реши её и нажми «Обновить» ещё раз.")
-            elif kind == "n" and not node.children and node.item:
+            elif kind == "n" and not node.children and node.items:
                 kind = "i"
-            if kind in ("i", "r") and node.item:
+            if kind in ("i", "r") and node.items:
                 text, kb = self.listings_view(node)
             else:
                 text, kb = self.menu(node)
@@ -140,7 +147,7 @@ class App:
         if notify and new and self.settings.notify:
             for l in new:
                 ps = f"{l.price:,} ₽".replace(",", " ") if l.price else "цена не указана"
-                text = (f"🆕 <b>{html.escape(item.model)}</b>\n<a href=\"{html.escape(l.url)}\">"
+                text = (f"🆕 <b>{html.escape(item.title)}</b>\n<a href=\"{html.escape(l.url)}\">"
                         f"{html.escape(l.title)}</a> — <b>{ps}</b>")
                 for uid in self.allowed:
                     await self.bot.send_message(uid, text, parse_mode="HTML")
@@ -162,7 +169,7 @@ class App:
                     await asyncio.sleep(1800)
                     break
                 except Exception:
-                    log.exception("ошибка при проверке %s", item.model)
+                    log.exception("ошибка при проверке %s", item.title)
             await asyncio.sleep(self.settings.interval_min * 60)
 
     async def captcha_alert(self):

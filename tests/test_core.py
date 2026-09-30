@@ -12,7 +12,7 @@ def test_tree_follows_diagram():
     for title in ["Видеокарты", "NVIDIA", "RTX", "40", "4060"]:
         n = n.children[title]
     assert set(n.children) == {"RTX 4060", "RTX 4060 Ti"}
-    assert n.children["RTX 4060"].item.price_max == 25000
+    assert n.children["RTX 4060"].items[0].price_max == 25000
     assert len(t.root.children) == 4
 
 
@@ -22,8 +22,33 @@ def test_search_url_spb_radius():
     assert "radius=50" in u and "pmin=15000" in u and "pmax=25000" in u
 
 
-def L(title, price=20000, text=""):
-    return Listing(id="1", title=title, price=price, url="u", text=title + " " + text)
+def L(title, price=20000, text="", region="sankt-peterburg"):
+    return Listing(id="1", title=title, price=price, url=f"https://www.avito.ru/{region}/tovary/x_1", text=title + " " + text)
+
+
+def test_only_spb_and_lo():
+    it = by_model["RTX 4060"]
+    assert accept(L("RTX 4060", region="gatchina"), it, settings)
+    assert accept(L("RTX 4060", region="leningradskaya_oblast_kirishi"), it, settings)
+    assert not accept(L("RTX 4060", region="moskva"), it, settings)
+
+
+def test_memory_variants_one_button():
+    rows = [["Раздел 1", "Модель (кнопка)", "Вариант", "Цена от, ₽", "Цена до, ₽", "Поисковый запрос", "Обязательные слова", "Минус-слова (доп.)"],
+            ["Видеокарты", "RTX 4060 Ti", "8GB", 25000, 30000, "RTX 4060 Ti", "Ti, 8GB", ""],
+            ["Видеокарты", "RTX 4060 Ti", "16GB", 30000, 35000, "RTX 4060 Ti", "Ti, 16GB", ""]]
+    its = catalog.parse_rows(rows)
+    t = catalog.Tree(its)
+    node = t.root.children["Видеокарты"].children["RTX 4060 Ti"]
+    assert [i.variant for i in node.items] == ["8GB", "16GB"] and len({i.key for i in its}) == 2
+    v8, v16 = node.items
+    assert accept(L("Palit RTX 4060 Ti 16 Гб", 32000), v16, settings)
+    assert not accept(L("Palit RTX 4060 Ti 16 Гб", 32000), v8, settings)
+    assert accept(L("RTX 4060 Ti Dual", 27000, text="память 8gb"), v8, settings)
+    assert not accept(L("RTX 4060 Ti 16GB", 40000), v16, settings)  # дороже своего диапазона
+    # без колонки «Вариант» версии называются по обязательным словам
+    rows2 = [[c for j, c in enumerate(r) if j != 2] for r in rows]
+    assert [i.variant for i in catalog.parse_rows(rows2)] == ["Ti, 8GB", "Ti, 16GB"]
 
 
 def test_filters():
@@ -35,7 +60,7 @@ def test_filters():
     assert not accept(L("RTX 4060", price=40000), it, settings)           # дороже диапазона
     assert not accept(L("RTX 4060 на запчасти"), it, settings)
     ti = by_model["RTX 4060 Ti"]
-    assert accept(L("Palit RTX 4060 Ti Dual"), ti, settings)
+    assert accept(L("Palit RTX 4060 Ti Dual 16GB", 32000), ti, settings)
     assert accept(L("GTX 1060 6GB Palit", 5000), by_model["GTX 1060 6GB"], settings)
     assert not accept(L("GTX 1060 3GB", 5000), by_model["GTX 1060 6GB"], settings)
 

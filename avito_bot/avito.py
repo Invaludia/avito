@@ -30,6 +30,28 @@ REGIONS = {
 }
 
 
+# Адреса объявлений Питера и Ленобласти. Авито при нехватке объявлений подмешивает
+# «объявления в других городах», их отсекаем по этому списку.
+SPB_LO_PREFIXES = ("sankt-peterburg", "leningradskaya_oblast")
+LO_TOWNS = {
+    "gatchina", "vsevolozhsk", "murino", "kudrovo", "sertolovo", "tosno", "kirovsk", "vyborg",
+    "kirishi", "luga", "sosnovyy_bor", "tihvin", "tikhvin", "volhov", "volkhov", "kingisepp",
+    "priozersk", "otradnoe", "nikolskoe", "kommunar", "sestroretsk", "zelenogorsk", "pushkin",
+    "pavlovsk", "petergof", "lomonosov", "kolpino", "krasnoe_selo", "shlisselburg", "yanino-1",
+    "bugry", "novoe_devyatkino", "shushary", "siverskiy", "vyritsa", "lebyazhe", "roshchino",
+    "sosnovo", "tayczy", "taytsy", "voyskovitsy", "vsevolozhskiy_rayon", "gatchinskiy_rayon",
+    "kuzmolovskiy", "sverdlova", "romanovka", "tokskovo", "toksovo", "novosaratovka", "lesnoy",
+    "pargolovo", "levashovo", "metallostroy", "ulyanovka", "nikolskoye", "podporozhe", "slantsy",
+    "volosovo", "lodeynoe_pole", "boksitogorsk", "pikalevo", "ivangorod", "primorsk", "svetogorsk",
+    "kamennogorsk", "vysotsk", "syasstroy", "novaya_ladoga", "lyuban", "kirovskiy_rayon",
+}
+
+
+def in_spb_lo(listing) -> bool:
+    r = listing.region
+    return r.startswith(SPB_LO_PREFIXES) or r in LO_TOWNS
+
+
 class Blocked(Exception):
     """Авито показал капчу или ограничил доступ."""
 
@@ -43,6 +65,12 @@ class Listing:
     text: str = ""       # заголовок + кусок описания с карточки, для стоп-слов
     place: str = ""
     date: str = ""
+
+    @property
+    def region(self) -> str:
+        """Первая часть адреса объявления: /sankt-peterburg/..., /gatchina/..., /moskva/..."""
+        path = self.url.split("avito.ru/", 1)[-1]
+        return path.split("/", 1)[0].lower()
 
 
 def search_url(item: Item, settings: Settings) -> str:
@@ -105,14 +133,22 @@ def _has_word(text: str, word: str) -> bool:
     return re.search(rf"(?<![\w]){re.escape(word.lower())}(?![\w])", text) is not None
 
 
+def _norm_mem(text: str) -> str:
+    # «16 Гб», «16gb», «16 GB», «16G» -> «16gb», чтобы версии по памяти сравнивались одинаково
+    return re.sub(r"(\d+)\s*(?:gb|гб|g|г)(?![\w])", r"\1gb", text.lower())
+
+
 def accept(listing: Listing, item: Item, settings: Settings) -> bool:
-    title = listing.title.lower()
-    full = listing.text.lower()
-    if any(_has_word(title, w) for w in item.minus):
+    title = _norm_mem(listing.title)
+    full = _norm_mem(listing.text)
+    if settings.spb_only and not in_spb_lo(listing):
+        return False
+    if any(_has_word(title, _norm_mem(w)) for w in item.minus):
         return False
     if any(w.lower() in full for w in settings.stop_words):
         return False
-    if not all(_has_word(title, w) for w in item.must):
+    # Обязательные слова ищем в заголовке и кусочке описания: объём памяти часто пишут только там
+    if not all(_has_word(full, _norm_mem(w)) for w in item.must):
         return False
     # Номер модели из запроса (4060, 12400F, 5800X3D) должен быть в заголовке:
     # поиск Авито нечёткий и подмешивает соседние модели
@@ -174,7 +210,10 @@ class AvitoClient:
             await self.reset()
             raise
         ok = [l for l in found if accept(l, item, settings)]
-        log.info("%s: карточек %d, подошло %d", item.model, len(found), len(ok))
+        other = sorted({l.region for l in found if not in_spb_lo(l)})
+        if other and settings.spb_only:
+            log.info("%s: отброшены объявления из других мест: %s", item.title, ", ".join(other))
+        log.info("%s: карточек %d, подошло %d", item.title, len(found), len(ok))
         return ok
 
     async def close(self):
