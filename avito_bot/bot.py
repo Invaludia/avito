@@ -102,7 +102,7 @@ class App:
         if not checked:
             body = "\nЕщё не проверял. Нажми «Обновить»."
         elif not rows:
-            body = "\nПодходящих объявлений сейчас нет."
+            body = "\nПроверенных подходящих объявлений пока нет. Нажми «Обновить», бот проверит ещё."
         else:
             lines = []
             for i, ((title, p, url, place), variant) in enumerate(rows, 1):
@@ -178,7 +178,7 @@ class App:
                 await c.answer("Ищу на Авито…")
                 try:
                     for it in node.items:
-                        await self.check(it, notify=False, detail_limit=4)
+                        await self.check(it, notify=False, detail_limit=6)
                 except Blocked as e:
                     await c.message.answer(f"Авито временно ограничил запросы ({e}). Если на компьютере открыто окно браузера с капчей, реши её и нажми «Обновить» ещё раз.")
             elif kind == "n" and not node.children and node.items:
@@ -195,16 +195,17 @@ class App:
         found = await self.client.search(item, self.settings)
         # Страницу каждого объявления открываем один раз: бронь, «продано», дефекты в полном описании.
         # За раз проверяем не больше detail_limit, остальные — в следующий проход
-        todo = [l for l in found if self.db.detail(l.id) is None][:detail_limit]
+        todo = sorted((l for l in found if self.db.detail(l.id) is None),
+                      key=lambda l: l.price or 0)[:detail_limit]  # сначала самые дешёвые
         for l in todo:
             try:
-                ok, reason = await self.client.details(l, self.settings)
+                ok, reason, descr = await self.client.details(l, self.settings)
             except Blocked:
                 raise
             except Exception as e:
                 log.warning("Не открылась страница %s: %s", l.url, e)
                 continue
-            self.db.set_detail(l.id, ok, reason)
+            self.db.set_detail(l.id, ok, reason, descr)
         found = [l for l in found if self.db.detail(l.id) != 0]
         new = self.db.save(item.key, found)
         new = [l for l in new if self.db.detail(l.id) == 1]  # уведомляем только о проверенных

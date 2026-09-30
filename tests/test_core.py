@@ -86,8 +86,8 @@ def test_db_new_only_after_first_run(tmp_path):
     a, b = Listing("1", "a", 1, "u1"), Listing("2", "b", 2, "u2")
     assert db.save("k", [a]) == []          # первый проход: без уведомлений
     assert [l.id for l in db.save("k", [a, b])] == ["2"]
-    assert len(db.rows("k")) == 2
-    db.set_detail("2", False, "бронь")
+    assert db.rows("k") == []                 # пока страницы не проверены — не показываем
+    db.set_detail("1", True); db.set_detail("2", False, "бронь")
     assert [l.id for l in db.rows("k")] == ["1"]
 
 
@@ -133,7 +133,7 @@ def test_detail_page():
     page = lambda status, desc: (f'<html><body><h1>RTX 3060</h1><div>{status}</div>'
                                  f'<div data-marker="item-view/item-description">{desc}</div>'
                                  f'<script>var x="зарезервирован"</script></body></html>')
-    assert check_detail(page("", "Карта в идеале, без артефактов"), settings) == (True, "")
+    assert check_detail(page("", "Карта в идеале, без артефактов"), settings)[:2] == (True, "")
     assert not check_detail(page("Зарезервирован", "Карта в идеале"), settings)[0]
     assert not check_detail(page("", "Работала в майнинге, есть артефакты при нагрузке"), settings)[0]
     assert not check_detail(page("", "Уже продана, спасибо"), settings)[0]
@@ -157,5 +157,49 @@ def test_display_refilters_stale_rows(tmp_path):
     a.db.save(it.key, [Listing("1", "Коробка от видеокарты RTX 4060", 300, "https://www.avito.ru/sankt-peterburg/a/b_1"),
                        Listing("2", "RTX 4060 Palit", 20000, "https://www.avito.ru/sankt-peterburg/a/b_2"),
                        Listing("3", "RTX 4060 MSI", 90000, "https://www.avito.ru/sankt-peterburg/a/b_3")])
+    for i in ("1", "2", "3"):
+        a.db.set_detail(i, True)
     text, _ = a.listings_view(n)
     assert "Palit" in text and "Коробка" not in text and "MSI" not in text
+
+
+STOP_V2 = ("перебо, пропада, пропал, не появ, нет картинки, нет изображения, черный экран, чёрный экран, "
+           "полосы, мерцает, мерцание, вылета, вылет, глючит, глюк, фриз, зависает, перезагружа, "
+           "ошибк, код 43, проблем, причина не ясна, отключается, слетает драйвер, греется, перегрев, "
+           "реболл, прогрев, перепай, после пайки, замена чипа, донор, требует ремонта")
+
+
+def test_symptom_words():
+    from avito_bot.avito import check_detail
+    s2 = catalog.Settings(dict(settings.raw))
+    s2.raw["стоп-слова для всех строк (только исправное)"] += ", " + STOP_V2
+    real = ("Видеокарта работает с перебоями. 3 года работала идеально, в последнее время стала пропадать "
+            "картина. Последний раз - картинка не появилась, причина не ясна. Внешне карта целая. Коробки нет")
+    page = lambda d: f'<html><head><meta name="description" content="{d}"></head><body><h1>RTX 3070</h1></body></html>'
+    assert not check_detail(page(real), s2)[0]               # описание только в мета-теге — тоже ловим
+    assert check_detail(page("Работает идеально, проблем нет, в играх без артефактов"), s2)[0]
+    assert check_detail(page("Никаких проблем, ошибок не было, не майнила"), s2)[0]
+    assert not check_detail(page("Иногда выдаёт ошибку 43"), s2)[0]
+    assert check_detail(page("Не греется, не глючит, тихая"), s2)[0]
+    assert not check_detail(page("Сильно греется под нагрузкой"), s2)[0]
+
+
+def test_new_stop_word_hides_already_checked(tmp_path):
+    from avito_bot.db import DB
+    db = DB(str(tmp_path / "s.db"))
+    it = by_model["RTX 4060"]
+    db.save(it.key, [Listing("7", "RTX 4060 Palit", 20000, "https://www.avito.ru/sankt-peterburg/a/b_7")])
+    db.set_detail("7", True, "", "работает с перебоями, причина не ясна")
+    assert [l.id for l in db.rows(it.key) if accept(l, it, settings)] == ["7"]
+    s2 = catalog.Settings(dict(settings.raw))
+    s2.raw["стоп-слова для всех строк (только исправное)"] += ", перебо"
+    assert [l.id for l in db.rows(it.key) if accept(l, it, s2)] == []
+
+
+def test_laptop_title():
+    s2 = catalog.Settings(dict(settings.raw))
+    s2.raw["минус-слова в заголовке для всех строк"] = "ноутбук, laptop, лептоп, mobile, max-q"
+    it = by_model["RTX 4060"]
+    assert not accept(L("RTX 4060 Laptop GPU 8GB"), it, s2)
+    assert not accept(L("Игровой ноутбук MSI RTX 4060"), it, s2)
+    assert accept(L("RTX 4060 Palit Dual"), it, s2)

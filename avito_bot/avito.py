@@ -141,7 +141,9 @@ def _starts_word(text: str, word: str) -> bool:
 
 
 # Стоп-слово не считается, если перед ним отрицание: «без артефактов», «нет сколов», «не было ремонта»
-_NEGATION = re.compile(r"(?:без|нет|не было|никаких|отсутствуют|ни одного)\s+(?:\w+\s+){0,2}$")
+_NEGATION = re.compile(r"(?:без|нет|не было|никаких|никогда не было|отсутствуют|ни одного|ни разу не)\s+(?:\w+\s+){0,2}$")
+# «проблем нет», «артефактов не было», «ошибок не замечено»
+_NEGATION_AFTER = re.compile(r"^\w*[\s,]+(?:\w+\s+)?(?:нет|не было|не замечено|не наблюдается|не наблюдалось|отсутствуют)\b")
 _FALSE_FRIENDS = {"скол": ("сколько", "скольк")}
 
 
@@ -153,7 +155,10 @@ def _has_stop(text: str, word: str) -> bool:
         rest = text[m.start():m.start() + len(w) + 4]
         if any(rest.startswith(f) for f in _FALSE_FRIENDS.get(w, ())):
             continue
-        if _NEGATION.search(text[max(0, m.start() - 40):m.start()]):
+        before = text[max(0, m.start() - 40):m.start()]
+        if _NEGATION.search(before) or re.search(r"(?<![а-яё])не\s+$", before):  # «не греется», «не глючит»
+            continue
+        if _NEGATION_AFTER.search(text[m.start() + len(w):m.start() + len(w) + 40]):
             continue
         return True
     return False
@@ -195,25 +200,34 @@ RESERVED_HEAD = ["зарезервирован", "в резерве", "забр�
 RESERVED_DESC = RESERVED_HEAD + ["бронь", "продано", "продана", "товар продан"]
 
 
-def check_detail(html: str, settings: Settings) -> tuple[bool, str]:
+def check_detail(html: str, settings: Settings) -> tuple[bool, str, str]:
     """Страница объявления: бронь / продано по шапке страницы, дефекты — по полному описанию."""
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
-    desc_el = soup.select_one('[data-marker="item-view/item-description"]') or soup.select_one('[itemprop="description"]')
-    desc = _norm_mem(desc_el.get_text(" ", strip=True)) if desc_el else ""
+    parts = []
+    for sel in ('[data-marker="item-view/item-description"]', '[itemprop="description"]'):
+        el = soup.select_one(sel)
+        if el:
+            parts.append(el.get_text(" ", strip=True))
+    # Запасной вариант, если Авито поменяет вёрстку: описание есть в мета-тегах страницы
+    for attrs in ({"name": "description"}, {"property": "og:description"}):
+        el = soup.find("meta", attrs=attrs)
+        if el and el.get("content"):
+            parts.append(el["content"])
+    desc = _norm_mem(" ".join(parts))
     # Шапка страницы (заголовок, цена, статус) — до блока «похожие объявления»
     head = soup.get_text(" ", strip=True).lower()[:6000]
     for w in RESERVED_HEAD:
         if _has_stop(head, w):
-            return False, w
+            return False, w, desc
     for w in RESERVED_DESC:
         if _has_stop(desc, w):
-            return False, w
+            return False, w, desc
     for w in settings.stop_words:
         if _has_stop(desc, w):
-            return False, w
-    return True, ""
+            return False, w, desc
+    return True, "", desc
 
 
 class AvitoClient:
@@ -271,11 +285,11 @@ class AvitoClient:
         log.info("%s: карточек %d, подошло %d", item.title, len(found), len(ok))
         return ok
 
-    async def details(self, listing: Listing, settings: Settings) -> tuple[bool, str]:
+    async def details(self, listing: Listing, settings: Settings) -> tuple[bool, str, str]:
         html = await self.fetch(listing.url)
-        ok, reason = check_detail(html, settings)
+        ok, reason, desc = check_detail(html, settings)
         log.info("Страница %s: %s", listing.url, "ок" if ok else f"отброшено ({reason})")
-        return ok, reason
+        return ok, reason, desc
 
     async def close(self):
         if self._session is not None:

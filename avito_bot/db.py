@@ -19,6 +19,11 @@ class DB:
         self.conn.execute("CREATE TABLE IF NOT EXISTS checked (item_key TEXT PRIMARY KEY, at REAL)")
         # Результат проверки страницы объявления: ok=1 годится, ok=0 бронь/продано/дефект в описании
         self.conn.execute("CREATE TABLE IF NOT EXISTS details (id TEXT PRIMARY KEY, ok INTEGER, reason TEXT, at REAL)")
+        dcols = {r[1] for r in self.conn.execute("PRAGMA table_info(details)")}
+        if "descr" not in dcols:
+            # Раньше описание не сохранялось: проверим страницы заново уже с новыми стоп-словами
+            self.conn.execute("DELETE FROM details")
+            self.conn.execute("ALTER TABLE details ADD COLUMN descr TEXT DEFAULT ''")
         self.conn.commit()
 
     def save(self, item_key: str, listings: list[Listing]) -> list[Listing]:
@@ -52,17 +57,21 @@ class DB:
         r = self.conn.execute("SELECT ok FROM details WHERE id=?", (listing_id,)).fetchone()
         return r[0] if r else None
 
-    def set_detail(self, listing_id: str, ok: bool, reason: str = ""):
-        self.conn.execute("INSERT OR REPLACE INTO details VALUES (?,?,?,?)", (listing_id, int(ok), reason, time.time()))
+    def set_detail(self, listing_id: str, ok: bool, reason: str = "", descr: str = ""):
+        self.conn.execute("INSERT OR REPLACE INTO details (id, ok, reason, at, descr) VALUES (?,?,?,?,?)",
+                          (listing_id, int(ok), reason, time.time(), descr))
         self.conn.commit()
 
     def rows(self, item_key: str) -> list[Listing]:
-        """Все сохранённые объявления модели, кроме отбракованных по странице объявления."""
+        """Объявления модели, чья страница уже проверена и годится (без брони и проблем в описании)."""
         out = []
-        for id_, title, price, url, place, text in self.conn.execute(
-                "SELECT l.id, l.title, l.price, l.url, l.place, l.text FROM listings l "
-                "LEFT JOIN details d ON d.id = l.id WHERE l.item_key=? AND (d.ok IS NULL OR d.ok=1)", (item_key,)):
-            out.append(Listing(id=id_, title=title, price=price, url=url, text=text or title, place=place or ""))
+        for id_, title, price, url, place, text, descr in self.conn.execute(
+                "SELECT l.id, l.title, l.price, l.url, l.place, l.text, d.descr FROM listings l "
+                "JOIN details d ON d.id = l.id WHERE l.item_key=? AND d.ok=1", (item_key,)):
+            # Описание со страницы объявления тоже участвует в фильтрах при показе:
+            # новое стоп-слово в таблице сразу убирает уже найденные объявления
+            out.append(Listing(id=id_, title=title, price=price, url=url,
+                               text=f"{text or title} {descr or ''}", place=place or ""))
         return out
 
     def checked_at(self, item_key: str) -> float | None:
