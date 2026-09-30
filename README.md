@@ -5,6 +5,10 @@ Telegram-бот: кнопки по дереву из таблицы (Видео�
 Каждые N минут бот сам проверяет все модели и присылает новые объявления.
 
 ## Запуск (Windows)
+
+Проще всего: скачать ZIP, распаковать и дважды щёлкнуть `run.bat`. При первом запуске он спросит токен бота.
+
+Вручную:
 1. Установить Python 3.11+ с python.org (галочка «Add to PATH»).
 2. В папке проекта: `py -m venv .venv`, `.venv\Scripts\pip install -r requirements.txt`
 3. Скопировать `.env.example` в `.env` и заполнить `BOT_TOKEN`, `ALLOWED_USERS`, `CATALOG`.
