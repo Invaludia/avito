@@ -5,10 +5,13 @@ if not exist .env (
   set /p TOKEN=Вставь токен бота от BotFather и нажми Enter: 
   call :mkenv
 )
-echo Устанавливаю библиотеки...
-py -m pip install -q -r requirements.txt
-echo Бот запущен. Не закрывай это окно, пока бот нужен.
-py -m avito_bot
+set PY=py
+where py >nul 2>nul || set PY=python
+%PY% --version || (echo Не нашёл Python. Установи его с python.org с галочкой Add to PATH. & pause & exit /b)
+echo Устанавливаю библиотеки, это может занять пару минут...
+%PY% -m pip install -q -r requirements.txt
+echo Запускаю бота...
+%PY% -m avito_bot
 pause
 exit /b
 

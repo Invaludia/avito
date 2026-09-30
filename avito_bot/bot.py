@@ -32,7 +32,14 @@ class App:
         self._register()
 
     def reload(self):
-        items, self.settings = catalog.load(self.source)
+        try:
+            items, self.settings = catalog.load(self.source)
+        except Exception as e:
+            if hasattr(self, "tree"):
+                raise
+            # Первый запуск: без таблицы бот бесполезен, берём шаблон из папки
+            log.error("Не удалось скачать таблицу (%s). Беру avito_catalog.xlsx из папки.", e)
+            items, self.settings = catalog.load("avito_catalog.xlsx")
         self.tree = catalog.Tree(items)
         log.info("каталог: %d моделей", len(items))
 
@@ -158,6 +165,8 @@ class App:
             await asyncio.sleep(self.settings.interval_min * 60)
 
     async def run(self):
+        me = await self.bot.get_me()
+        print(f"\n=== Бот @{me.username} запущен, напиши ему /start в Telegram. Не закрывай это окно. ===\n", flush=True)
         task = asyncio.create_task(self.loop())
         try:
             await self.dp.start_polling(self.bot)
@@ -168,7 +177,14 @@ class App:
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    asyncio.run(App().run())
+    try:
+        asyncio.run(App().run())
+    except KeyError:
+        print("Нет BOT_TOKEN в файле .env. Удали .env и запусти run.bat заново.")
+    except Exception as e:
+        if "Unauthorized" in repr(e) or "token" in repr(e).lower():
+            print("Telegram не принял токен. Удали файл .env и запусти run.bat заново, вставив токен целиком.")
+        raise
 
 
 if __name__ == "__main__":
