@@ -203,3 +203,8 @@ def test_laptop_title():
     assert not accept(L("RTX 4060 Laptop GPU 8GB"), it, s2)
     assert not accept(L("Игровой ноутбук MSI RTX 4060"), it, s2)
     assert accept(L("RTX 4060 Palit Dual"), it, s2)
+
+
+def test_numeric_section_cells():
+    assert catalog._norm(30.0) == "30" and catalog._norm(30) == "30" and catalog._norm(" 30 ") == "30"
+    assert catalog._norm(8.5) == "8.5"

@@ -113,7 +113,11 @@ def node_id(path) -> str:
 
 
 def _norm(v) -> str:
-    return "" if v is None else str(v).strip()
+    if v is None:
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)  # Google отдаёт число 30 как 30.0, а в соседней строке «30» текстом: без этого два раздела
+    return str(v).strip()
 
 
 # Колонки листа «Каталог» (по заголовкам, чтобы порядок можно было менять)
