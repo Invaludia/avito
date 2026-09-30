@@ -13,11 +13,14 @@ if exist .git (
 )
 if not exist .env (
   set /p TOKEN=Вставь токен бота от BotFather и нажми Enter: 
+  set /p SHEET=Вставь ссылку на Google Таблицу и нажми Enter: 
   call :mkenv
 )
 set PY=py
 where py >nul 2>nul || set PY=python
 %PY% --version || (echo Не нашёл Python. Установи его с python.org с галочкой Add to PATH. & pause & exit /b)
+echo Проверяю обновления...
+%PY% -m avito_bot.update
 echo Устанавливаю библиотеки, это может занять пару минут...
 %PY% -m pip install -q -r requirements.txt
 echo Запускаю бота...
@@ -27,7 +30,7 @@ exit /b
 
 :mkenv
 > .env echo BOT_TOKEN=%TOKEN%
->> .env echo CATALOG=https://docs.google.com/spreadsheets/d/1jW3sHsxgwMMbmZcgJCpjYZiYiqKJciXgYDNbiYMf79k/edit
+>> .env echo CATALOG=%SHEET%
 >> .env echo ALLOWED_USERS=
 >> .env echo DB_PATH=avito.sqlite3
 exit /b
