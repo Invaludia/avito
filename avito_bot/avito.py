@@ -129,8 +129,33 @@ def _looks_blocked(html: str) -> bool:
 
 
 def _has_word(text: str, word: str) -> bool:
-    # Слово целиком, чтобы «Ti» не срабатывало внутри «Titan», а «6» внутри «1060»
-    return re.search(rf"(?<![\w]){re.escape(word.lower())}(?![\w])", text) is not None
+    """Минус-слово: отдельное слово или суффикс номера модели.
+    «Ti» ловит «RTX 4060 Ti» и «4060Ti», но не «Titan»; «KF» ловит «12600KF»."""
+    return re.search(rf"(?<![a-zа-яё]){re.escape(word.lower())}(?![a-zа-яё0-9])", text) is not None
+
+
+def _starts_word(text: str, word: str) -> bool:
+    """Обязательное слово: начало слова. «12400» есть в «12400F», «8gb» не находится в «18gb»."""
+    return re.search(rf"(?<![a-zа-яё0-9]){re.escape(word.lower())}", text) is not None
+
+
+# Стоп-слово не считается, если перед ним отрицание: «без артефактов», «нет сколов», «не было ремонта»
+_NEGATION = re.compile(r"(?:без|нет|не было|никаких|отсутствуют|ни одного)\s+(?:\w+\s+){0,2}$")
+_FALSE_FRIENDS = {"скол": ("сколько", "скольк")}
+
+
+def _has_stop(text: str, word: str) -> bool:
+    w = word.lower().strip()
+    if not w:
+        return False
+    for m in re.finditer(rf"(?<![a-zа-яё0-9]){re.escape(w)}", text):
+        rest = text[m.start():m.start() + len(w) + 4]
+        if any(rest.startswith(f) for f in _FALSE_FRIENDS.get(w, ())):
+            continue
+        if _NEGATION.search(text[max(0, m.start() - 40):m.start()]):
+            continue
+        return True
+    return False
 
 
 def _norm_mem(text: str) -> str:
@@ -145,10 +170,10 @@ def accept(listing: Listing, item: Item, settings: Settings) -> bool:
         return False
     if any(_has_word(title, _norm_mem(w)) for w in item.minus):
         return False
-    if any(w.lower() in full for w in settings.stop_words):
+    if any(_has_stop(full, w) for w in settings.stop_words):
         return False
     # Обязательные слова ищем в заголовке и кусочке описания: объём памяти часто пишут только там
-    if not all(_has_word(full, _norm_mem(w)) for w in item.must):
+    if not all(_starts_word(full, _norm_mem(w)) for w in item.must):
         return False
     # Номер модели из запроса (4060, 12400F, 5800X3D) должен быть в заголовке:
     # поиск Авито нечёткий и подмешивает соседние модели

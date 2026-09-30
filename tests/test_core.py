@@ -87,3 +87,21 @@ def test_db_new_only_after_first_run(tmp_path):
     assert db.save("k", [a]) == []          # первый проход: без уведомлений
     assert [l.id for l in db.save("k", [a, b])] == ["2"]
     assert len(db.top("k", 10, True)) == 2
+
+
+def test_real_table_rows():
+    """Строки из рабочей таблицы (30.09): процессоры с суффиксами, отрицания в описании."""
+    rows = [["Раздел 1", "Модель (кнопка)", "Вкл", "Поисковый запрос", "Обязательные слова", "Минус-слова (доп.)"],
+            ["Процессоры", "i5-12400F", "да", "i5 12400F", "12400", "ES, QS"],
+            ["Процессоры", "i5-12600K", "да", "i5 12600K", "12600", "KF"],
+            ["Процессоры", "Ryzen 5 5600", "да", "Ryzen 5 5600", "5600", "5600X, 5600G"]]
+    its = {i.model: i for i in catalog.parse_rows(rows)}
+    assert accept(L("Intel Core i5-12400F", 9000), its["i5-12400F"], settings)
+    assert not accept(L("Intel Core i5-12600KF", 15000), its["i5-12600K"], settings)
+    assert accept(L("Intel Core i5-12600K OEM", 15000), its["i5-12600K"], settings)
+    assert not accept(L("AMD Ryzen 5 5600X", 8000), its["Ryzen 5 5600"], settings)
+    gpu = by_model["RTX 4060"]
+    assert accept(L("RTX 4060", text="без артефактов, без дефектов, всё работает"), gpu, settings)
+    assert accept(L("RTX 4060", text="отвечу на сколько угодно вопросов"), gpu, settings)
+    assert not accept(L("RTX 4060", text="небольшой скол на кожухе"), gpu, settings)
+    assert not accept(L("RTX 4060Ti 8gb"), gpu, settings)
