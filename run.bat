@@ -1,6 +1,12 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
+if not exist avito_bot\ (
+  echo Не вижу файлов бота рядом с run.bat. Похоже, архив не распакован.
+  echo Закрой окно, нажми на ZIP правой кнопкой - "Извлечь все", и запусти run.bat из распакованной папки.
+  pause
+  exit /b
+)
 if exist .git (
   echo Проверяю обновления...
   git pull --ff-only || echo Не удалось обновиться, запускаю текущую версию.
