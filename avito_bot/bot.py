@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import statistics
 import html
 import logging
 import os
@@ -13,7 +14,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from dotenv import load_dotenv
 
 from . import catalog
-from .avito import Blocked, accept, make_client
+from .avito import Blocked, accept, make_client, parse_listings, search_url
 from .db import DB
 
 log = logging.getLogger("avito_bot")
@@ -136,6 +137,18 @@ class App:
             await asyncio.to_thread(self.reload)
             await m.answer(f"Таблица перечитана, моделей: {len(self.tree.items)}")
 
+        @dp.message(Command("scan"))
+        async def scan_cmd(m: Message):
+            if not self.ok(m.from_user.id): return
+            items = list(self.tree.items.values())
+            await m.answer(f"Сканирую рынок: {len(items)} позиций, это займёт пару минут…")
+            try:
+                text = await self.scan(items)
+            except Blocked as e:
+                text = f"Авито ограничил запросы ({e}). Попробуй позже или пройди проверку в окне Chrome."
+            for part in _chunks(text):
+                await m.answer(part, parse_mode="HTML", disable_web_page_preview=True)
+
         @dp.message(Command("table"))
         async def table_cmd(m: Message):
             if not self.ok(m.from_user.id): return
@@ -203,6 +216,32 @@ class App:
                 for uid in self.allowed:
                     await self.bot.send_message(uid, text, parse_mode="HTML")
 
+    async def scan(self, items: list[catalog.Item]) -> str:
+        """Обзор рынка: сколько объявлений и по каким ценам, без учёта ценового диапазона из таблицы."""
+        fmt = lambda v: f"{v:,}".replace(",", " ")
+        lines = ["<b>Рынок, Питер + ЛО, только исправные</b>", ""]
+        pages: dict[str, list] = {}  # 3060 12GB и 8GB ищутся одним запросом — не ходим на Авито дважды
+        for it in items:
+            url = search_url(it, self.settings, market=True)
+            if url not in pages:
+                pages[url] = parse_listings(await self.client.fetch(url))
+            found = [l for l in pages[url] if accept(l, it, self.settings, check_price=False)]
+            prices = sorted(l.price for l in found if l.price)
+            if not prices:
+                lines.append(f"<b>{html.escape(it.title)}</b>: объявлений нет\n")
+                continue
+            med = int(statistics.median(prices))
+            in_range = [l for l in found if l.price and (not it.price_min or l.price >= it.price_min)
+                        and (not it.price_max or l.price <= it.price_max)]
+            cheap = min((l for l in found if l.price), key=lambda l: l.price)
+            rng = f"{fmt(it.price_min or 0)}–{fmt(it.price_max) if it.price_max else '∞'}"
+            lines.append(f"<b>{html.escape(it.title)}</b>: {len(prices)} шт., "
+                         f"от {fmt(prices[0])} до {fmt(prices[-1])} ₽, медиана <b>{fmt(med)} ₽</b>\n"
+                         f"   в твоём диапазоне {rng}: {len(in_range)} шт.\n"
+                         f'   самая дешёвая: <a href="{html.escape(cheap.url)}">{html.escape(cheap.title[:60])}</a>\n')
+        lines.append("<i>Первая страница выдачи Авито (свежие), без проверки брони на странице объявления.</i>")
+        return "\n".join(lines)
+
     async def loop(self):
         await asyncio.sleep(120)  # не начинать обход сразу при запуске
         while True:
@@ -238,6 +277,15 @@ class App:
         finally:
             task.cancel()
             await self.client.close()
+
+
+def _chunks(text: str, limit: int = 3800) -> list[str]:
+    parts, cur = [], ""
+    for line in text.split("\n"):
+        if len(cur) + len(line) + 1 > limit:
+            parts.append(cur); cur = ""
+        cur += line + "\n"
+    return parts + [cur] if cur.strip() else parts
 
 
 def _set_env(key: str, value: str, path: str = ".env"):

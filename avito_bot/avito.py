@@ -73,13 +73,14 @@ class Listing:
         return path.split("/", 1)[0].lower()
 
 
-def search_url(item: Item, settings: Settings) -> str:
+def search_url(item: Item, settings: Settings, market: bool = False) -> str:
+    """market=True — для обзора рынка: без ценового диапазона, свежие объявления первыми."""
     city = (item.city or settings.city).strip().lower()
     region, use_radius = REGIONS.get(city, ("sankt-peterburg", True))
     section = settings.avito_section(item.category) or DEFAULT_SECTIONS.get(item.category.lower(), "")
-    params = {"q": item.query, "s": "1" if settings.sort_by_price else "104"}
-    if item.price_min: params["pmin"] = item.price_min
-    if item.price_max: params["pmax"] = item.price_max
+    params = {"q": item.query, "s": "104" if market or not settings.sort_by_price else "1"}
+    if item.price_min and not market: params["pmin"] = item.price_min
+    if item.price_max and not market: params["pmax"] = item.price_max
     if use_radius and settings.radius_km: params["radius"] = settings.radius_km
     if item.delivery_only or settings.delivery_only: params["d"] = 1
     path = f"{region}/{section}".rstrip("/")
@@ -163,9 +164,9 @@ def _norm_mem(text: str) -> str:
     return re.sub(r"(\d+)\s*(?:gb|гб|g|г)(?![\w])", r"\1gb", text.lower())
 
 
-def accept(listing: Listing, item: Item, settings: Settings) -> bool:
+def accept(listing: Listing, item: Item, settings: Settings, check_price: bool = True) -> bool:
     title = _norm_mem(listing.title)
-    full = _norm_mem(listing.text)
+    full = _norm_mem(listing.title + " " + listing.text)
     if settings.spb_only and not in_spb_lo(listing):
         return False
     if any(_has_word(title, _norm_mem(w)) for w in item.minus):
@@ -183,7 +184,7 @@ def accept(listing: Listing, item: Item, settings: Settings) -> bool:
     num = next((w for w in re.findall(r"\w+", item.query.lower()) if sum(c.isdigit() for c in w) >= 4), None)
     if num and num not in title.replace(" ", ""):
         return False
-    if listing.price is not None:
+    if check_price and listing.price is not None:
         if item.price_min and listing.price < item.price_min: return False
         if item.price_max and listing.price > item.price_max: return False
     return True
@@ -255,15 +256,15 @@ class AvitoClient:
             await self._session.close()
             self._session = None
 
-    async def search(self, item: Item, settings: Settings) -> list[Listing]:
-        html = await self.fetch(search_url(item, settings))
+    async def search(self, item: Item, settings: Settings, market: bool = False) -> list[Listing]:
+        html = await self.fetch(search_url(item, settings, market))
         try:
             found = parse_listings(html)
         except Blocked:
             self._dump(html)
             await self.reset()
             raise
-        ok = [l for l in found if accept(l, item, settings)]
+        ok = [l for l in found if accept(l, item, settings, check_price=not market)]
         other = sorted({l.region for l in found if not in_spb_lo(l)})
         if other and settings.spb_only:
             log.info("%s: отброшены объявления из других мест: %s", item.title, ", ".join(other))
