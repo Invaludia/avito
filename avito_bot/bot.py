@@ -13,7 +13,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from dotenv import load_dotenv
 
 from . import catalog
-from .avito import AvitoClient, Blocked
+from .avito import Blocked, make_client
 from .db import DB
 
 log = logging.getLogger("avito_bot")
@@ -25,7 +25,7 @@ class App:
         self.source = os.environ.get("CATALOG", "avito_catalog.xlsx")
         self.allowed = {int(x) for x in os.environ.get("ALLOWED_USERS", "").replace(" ", "").split(",") if x}
         self.db = DB(os.environ.get("DB_PATH", "avito.sqlite3"))
-        self.client = AvitoClient()
+        self.client = make_client(os.environ.get("BROWSER", "msedge"))
         self.bot = Bot(os.environ["BOT_TOKEN"])
         self.dp = Dispatcher()
         self.reload()
@@ -123,7 +123,7 @@ class App:
                 try:
                     await self.check(node.item, notify=False)
                 except Blocked as e:
-                    await c.message.answer(f"Авито временно ограничил запросы ({e}), попробую позже.")
+                    await c.message.answer(f"Авито временно ограничил запросы ({e}). Если на компьютере открыто окно браузера с капчей, реши её и нажми «Обновить» ещё раз.")
             elif kind == "n" and not node.children and node.item:
                 kind = "i"
             if kind in ("i", "r") and node.item:
@@ -165,7 +165,13 @@ class App:
                     log.exception("ошибка при проверке %s", item.model)
             await asyncio.sleep(self.settings.interval_min * 60)
 
+    async def captcha_alert(self):
+        for uid in self.allowed:
+            await self.bot.send_message(uid, "🧩 Авито просит капчу. Реши её в окне браузера на компьютере, я подожду 3 минуты.")
+
     async def run(self):
+        if hasattr(self.client, "on_captcha"):
+            self.client.on_captcha = self.captcha_alert
         me = await self.bot.get_me()
         print(f"\n=== Бот @{me.username} запущен, напиши ему /start в Telegram. Не закрывай это окно. ===\n", flush=True)
         task = asyncio.create_task(self.loop())

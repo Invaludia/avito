@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import logging
 import random
 import re
@@ -179,3 +180,84 @@ class AvitoClient:
     async def close(self):
         if self._session is not None:
             await self._session.close()
+
+
+class BrowserClient(AvitoClient):
+    """Открывает Авито в настоящем браузере (Edge есть на любом Windows).
+
+    Профиль браузера хранится в папке browser_profile, поэтому cookies живут между запусками.
+    Если Авито покажет капчу, её можно решить прямо в окне браузера: бот подождёт.
+    """
+
+    CAPTCHA_WAIT = 180  # секунд ждём, пока человек решит капчу в окне
+
+    def __init__(self, channel: str = "msedge", headless: bool = False, executable: str | None = None, **kw):
+        super().__init__(**kw)
+        self.channel, self.headless, self.executable = channel, headless, executable
+        self._pw = self._ctx = self._page = None
+        self.on_captcha = None  # async-функция, которую бот вызывает, чтобы написать в Telegram
+
+    async def _open(self):
+        from playwright.async_api import async_playwright
+        self._pw = await async_playwright().start()
+        opts = dict(headless=self.headless, locale="ru-RU", viewport={"width": 1280, "height": 900},
+                    args=["--disable-blink-features=AutomationControlled"])
+        if self.executable:
+            opts["executable_path"] = self.executable
+        else:
+            opts["channel"] = self.channel
+        self._ctx = await self._pw.chromium.launch_persistent_context("browser_profile", **opts)
+        self._page = self._ctx.pages[0] if self._ctx.pages else await self._ctx.new_page()
+
+    async def fetch(self, url: str) -> str:
+        async with self._lock:
+            if self._page is None:
+                await self._open()
+            resp = await self._page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            await self._page.wait_for_timeout(random.randint(1500, 3000))
+            status = resp.status if resp else 0
+            html = await self._page.content()
+            log.info("Авито (браузер) %s -> HTTP %s, %d байт", url, status, len(html))
+            if not parse_listings_safe(html) and (status in (403, 429) or _looks_blocked(html)):
+                self._dump(html)
+                if self.on_captcha:
+                    await self.on_captcha()
+                # Ждём, пока в окне решат капчу и появятся объявления
+                for _ in range(self.CAPTCHA_WAIT // 5):
+                    await self._page.wait_for_timeout(5000)
+                    html = await self._page.content()
+                    if parse_listings_safe(html):
+                        log.info("Капча пройдена")
+                        break
+                else:
+                    raise Blocked(f"HTTP {status}, капча не решена")
+                if self._page.url.split("?")[0] != url.split("?")[0]:
+                    await self._page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                    html = await self._page.content()
+            await asyncio.sleep(random.uniform(self.min_delay, self.max_delay))
+            return html
+
+    async def reset(self):
+        pass  # профиль браузера не сбрасываем: cookies после капчи нам и нужны
+
+    async def close(self):
+        if self._ctx is not None:
+            await self._ctx.close()
+        if self._pw is not None:
+            await self._pw.stop()
+
+
+def parse_listings_safe(html: str) -> list[Listing]:
+    try:
+        return parse_listings(html)
+    except Blocked:
+        return []
+
+
+def make_client(mode: str) -> AvitoClient:
+    """mode: msedge (по умолчанию), chrome или http (без браузера, быстро, но чаще блокируют)."""
+    mode = (mode or "msedge").strip().lower()
+    if mode == "http":
+        return AvitoClient()
+    headless = os.environ.get("HEADLESS", "0") == "1"
+    return BrowserClient(channel=mode, headless=headless, executable=os.environ.get("BROWSER_PATH") or None)
