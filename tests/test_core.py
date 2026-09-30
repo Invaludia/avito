@@ -105,3 +105,15 @@ def test_real_table_rows():
     assert accept(L("RTX 4060", text="отвечу на сколько угодно вопросов"), gpu, settings)
     assert not accept(L("RTX 4060", text="небольшой скол на кожухе"), gpu, settings)
     assert not accept(L("RTX 4060Ti 8gb"), gpu, settings)
+
+
+def test_accessories_and_reserved():
+    s2 = catalog.Settings(dict(settings.raw))
+    s2.raw["стоп-слова для всех строк (только исправное)"] += ", зарезервирован, в резерве, забронирован, бронь, продана, продано"
+    it = by_model["RTX 4060"]
+    assert not accept(L("Коробка от видеокарты RTX 4060 Palit", 20000), it, s2)
+    assert accept(L("RTX 4060 Palit", 20000, text="полный комплект, в коробке"), it, s2)
+    assert not accept(L("RTX 4060 Palit", 20000, text="Зарезервирован"), it, s2)
+    assert not accept(L("RTX 4060 Palit", 20000, text="уже забронирована до вечера"), it, s2)
+    assert not accept(L("Куплю RTX 4060", 20000), it, s2)
+    assert accept(L("RTX 4060 Palit", 20000, text="без брони, свободна"), it, s2)

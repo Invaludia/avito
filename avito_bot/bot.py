@@ -34,14 +34,16 @@ class App:
     def reload(self):
         try:
             items, self.settings = catalog.load(self.source)
+            self.fallback = False
         except Exception as e:
             if hasattr(self, "tree"):
                 raise
+            self.fallback = True
             # Первый запуск: без таблицы бот бесполезен, берём шаблон из папки
             log.error("Не удалось скачать таблицу (%s). Беру avito_catalog.xlsx из папки.", e)
             items, self.settings = catalog.load("avito_catalog.xlsx")
         self.tree = catalog.Tree(items)
-        log.info("каталог: %d моделей", len(items))
+        log.info("каталог: %d моделей, таблица: %s", len(items), "шаблон из папки" if self.fallback else self.source)
 
     def ok(self, user_id: int) -> bool:
         return not self.allowed or user_id in self.allowed
@@ -75,8 +77,10 @@ class App:
         if up is not None:
             rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"n:{up.id}"),
                          InlineKeyboardButton(text="В начало", callback_data="n:root")])
-        title = " → ".join(node.path) or "Что ищем?"
-        return html.escape(title), InlineKeyboardMarkup(inline_keyboard=rows)
+        title = html.escape(" → ".join(node.path) or "Что ищем?")
+        if getattr(self, "fallback", False):
+            title = "⚠️ Google Таблица не скачалась, работаю по шаблону из папки. Проверь /table\n\n" + title
+        return title, InlineKeyboardMarkup(inline_keyboard=rows)
 
     def listings_view(self, node: catalog.Node) -> tuple[str, InlineKeyboardMarkup]:
         s = self.settings

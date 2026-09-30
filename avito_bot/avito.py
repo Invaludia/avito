@@ -172,6 +172,9 @@ def accept(listing: Listing, item: Item, settings: Settings) -> bool:
         return False
     if any(_has_stop(full, w) for w in settings.stop_words):
         return False
+    # Коробки, кабели, «куплю» и т.п. отсекаем только по заголовку: «в коробке» в описании — это нормально
+    if any(_has_stop(title, w) for w in settings.title_stop_words):
+        return False
     # Обязательные слова ищем в заголовке и кусочке описания: объём памяти часто пишут только там
     if not all(_starts_word(full, _norm_mem(w)) for w in item.must):
         return False
