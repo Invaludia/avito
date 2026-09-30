@@ -159,11 +159,22 @@ class App:
                 for part in _chunks(text):
                     await m.answer(part, parse_mode="HTML", disable_web_page_preview=True)
                 # Затем полный проход: открываем страницы подходящих объявлений и проверяем описание
-                await m.answer("Теперь проверяю страницы подходящих объявлений (бронь, дефекты, описание)…")
+                status = await m.answer("Теперь проверяю страницы подходящих объявлений (бронь, дефекты, описание). "
+                                        "Каждая страница открывается с паузой ~10 секунд, чтобы Авито не заблокировал.")
                 lines = []
-                for item in items:
+                for i, item in enumerate(items, 1):
+                    async def progress(n, total, i=i, item=item):
+                        try:
+                            await status.edit_text(f"⏳ Модель {i}/{len(items)}: {item.title}\n"
+                                                   f"Открываю объявление {n} из {total}…")
+                        except Exception:
+                            pass
                     try:
-                        await self.check(item, notify=False, detail_limit=10)
+                        await status.edit_text(f"⏳ Модель {i}/{len(items)}: {item.title}\nИщу объявления…")
+                    except Exception:
+                        pass
+                    try:
+                        await self.check(item, notify=False, detail_limit=10, progress=progress)
                     except Blocked as e:
                         lines.append(f"⚠️ Авито ограничил запросы ({e}), остановился.")
                         break
@@ -173,6 +184,10 @@ class App:
                     best = min((l.price for l in good if l.price), default=None)
                     tail = f", от {best:,} ₽".replace(",", " ") if best else ""
                     lines.append(f"{'✅' if good else '▫️'} {html.escape(item.title)}: {len(good)} шт.{tail}")
+                try:
+                    await status.edit_text("✅ Проверка страниц закончена.")
+                except Exception:
+                    pass
                 await m.answer("<b>Проверенные подходящие объявления</b>\n" + "\n".join(lines)
                                + "\n\nСсылки: /start → модель.", parse_mode="HTML")
 
@@ -218,13 +233,15 @@ class App:
             await c.answer()
 
     # ---------- парсинг ----------
-    async def check(self, item: catalog.Item, notify: bool = True, detail_limit: int = 8):
+    async def check(self, item: catalog.Item, notify: bool = True, detail_limit: int = 8, progress=None):
         found = await self.client.search(item, self.settings)
         # Страницу каждого объявления открываем один раз: бронь, «продано», дефекты в полном описании.
         # За раз проверяем не больше detail_limit, остальные — в следующий проход
         todo = sorted((l for l in found if self.db.detail(l.id) is None),
                       key=lambda l: l.price or 0)[:detail_limit]  # сначала самые дешёвые
-        for l in todo:
+        for n, l in enumerate(todo, 1):
+            if progress:
+                await progress(n, len(todo))
             try:
                 ok, reason, descr = await self.client.details(l, self.settings)
             except Blocked:
