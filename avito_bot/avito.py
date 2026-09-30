@@ -259,32 +259,83 @@ class BrowserClient(AvitoClient):
         super().__init__(**kw)
         self.channel, self.headless, self.executable = channel, headless, executable
         self._pw = self._ctx = self._page = None
+        self.warmup = True
         self.on_captcha = None  # async-функция, которую бот вызывает, чтобы написать в Telegram
 
-    async def _open(self):
-        from playwright.async_api import async_playwright
-        self._pw = await async_playwright().start()
-        opts = dict(headless=self.headless, locale="ru-RU", viewport={"width": 1280, "height": 900},
-                    args=["--disable-blink-features=AutomationControlled"])
-        # Отдельный профиль в папке бота: твой обычный Chrome, вкладки и вход в аккаунты не трогаются
+    def _find_browser(self) -> tuple[str, str] | None:
+        """Путь к установленному Chrome или Edge."""
         if self.executable:
-            self._ctx = await self._pw.chromium.launch_persistent_context(
-                "browser_profile", executable_path=self.executable, **opts)
+            return self.executable, "custom"
+        env = os.environ
+        places = {
+            "chrome": [
+                os.path.join(env.get("ProgramFiles", r"C:\Program Files"), r"Google\Chrome\Application\chrome.exe"),
+                os.path.join(env.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), r"Google\Chrome\Application\chrome.exe"),
+                os.path.join(env.get("LOCALAPPDATA", ""), r"Google\Chrome\Application\chrome.exe"),
+                "/usr/bin/google-chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            ],
+            "msedge": [
+                os.path.join(env.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), r"Microsoft\Edge\Application\msedge.exe"),
+                os.path.join(env.get("ProgramFiles", r"C:\Program Files"), r"Microsoft\Edge\Application\msedge.exe"),
+                "/usr/bin/microsoft-edge",
+            ],
+        }
+        for ch in dict.fromkeys([self.channel, "chrome", "msedge"]):
+            for path in places.get(ch, []):
+                if path and os.path.isfile(path):
+                    return path, ch
+        return None
+
+    async def _open(self):
+        """Запускаем браузер сами, как обычный человек, и подключаемся к нему.
+
+        Если запускать через Playwright напрямую, браузер получает служебные флаги
+        (--enable-automation, --no-sandbox), и Авито видит, что им управляет программа.
+        """
+        import socket
+        import subprocess
+        from playwright.async_api import async_playwright
+
+        found = self._find_browser()
+        if not found:
+            raise RuntimeError("Не нашёл Google Chrome или Microsoft Edge на компьютере")
+        exe, name = found
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        # Отдельный профиль в папке бота: твой обычный Chrome, вкладки и вход в аккаунты не трогаются
+        profile = os.path.abspath(f"browser_profile_{name}")
+        args = [exe, f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
+                "--no-first-run", "--no-default-browser-check", "--lang=ru-RU", "--window-size=1280,900"]
+        if self.headless:
+            args.append("--headless=new")
+        args.append("about:blank")
+        self._proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log.info("Открываю Авито в браузере: %s", exe)
+
+        self._pw = await async_playwright().start()
+        last = None
+        for _ in range(40):  # до 20 секунд ждём, пока браузер запустится
+            try:
+                self._browser = await self._pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+                break
+            except Exception as e:
+                last = e
+                await asyncio.sleep(0.5)
         else:
-            last = None
-            for ch in dict.fromkeys([self.channel, "chrome", "msedge"]):
-                try:
-                    self._ctx = await self._pw.chromium.launch_persistent_context(
-                        f"browser_profile_{ch}", channel=ch, **opts)
-                    log.info("Открываю Авито в браузере: %s", ch)
-                    break
-                except Exception as e:  # браузер не установлен — пробуем следующий
-                    last = e
-                    log.warning("Не удалось открыть %s: %s", ch, str(e).splitlines()[0])
-            else:
-                raise last
+            raise RuntimeError(f"Браузер не ответил: {last}")
+        self._ctx = self._browser.contexts[0] if self._browser.contexts else await self._browser.new_context()
         self._page = self._ctx.pages[0] if self._ctx.pages else await self._ctx.new_page()
-        self._ctx.on("close", lambda _: setattr(self, "_page", None))
+        self._browser.on("disconnected", lambda _: setattr(self, "_page", None))
+        # Сначала главная, как обычный посетитель
+        if not self.warmup:
+            return
+        try:
+            await self._page.goto(BASE + "/", wait_until="domcontentloaded", timeout=60000)
+            await self._page.wait_for_timeout(random.randint(3000, 5000))
+        except Exception as e:
+            log.warning("Главная Авито не открылась: %s", str(e).splitlines()[0])
+            await asyncio.sleep(2)
 
     async def _goto(self, url: str):
         """Открывает страницу; если окно браузера закрыли, запускает браузер заново."""
@@ -301,13 +352,16 @@ class BrowserClient(AvitoClient):
                 self._page = None
 
     async def _shutdown(self):
-        for obj, meth in ((self._ctx, "close"), (self._pw, "stop")):
+        for obj, meth in ((getattr(self, "_browser", None), "close"), (self._pw, "stop")):
             if obj is not None:
                 try:
                     await getattr(obj, meth)()
                 except Exception:
                     pass
-        self._pw = self._ctx = self._page = None
+        proc = getattr(self, "_proc", None)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+        self._pw = self._ctx = self._page = self._browser = self._proc = None
 
     async def fetch(self, url: str) -> str:
         async with self._lock:
