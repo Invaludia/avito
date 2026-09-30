@@ -115,6 +115,22 @@ class App:
             await asyncio.to_thread(self.reload)
             await m.answer(f"Таблица перечитана, моделей: {len(self.tree.items)}")
 
+        @dp.message(Command("table"))
+        async def table_cmd(m: Message):
+            if not self.ok(m.from_user.id): return
+            parts = (m.text or "").split(maxsplit=1)
+            if len(parts) < 2 or "docs.google.com/spreadsheets" not in parts[1]:
+                return await m.answer(f"Сейчас таблица: {self.source}\nЧтобы сменить: /table ссылка_на_google_таблицу")
+            url = parts[1].strip()
+            try:
+                items, _ = await asyncio.to_thread(catalog.load, url)
+            except Exception as e:
+                return await m.answer(f"Не смог прочитать эту таблицу: {e}\nПроверь доступ «Все, у кого есть ссылка → Читатель».")
+            _set_env("CATALOG", url)
+            self.source = url
+            await asyncio.to_thread(self.reload)
+            await m.answer(f"Таблица подключена, моделей: {len(items)}. Нажми /start.")
+
         @dp.callback_query(F.data.startswith(("n:", "i:", "r:")))
         async def nav(c: CallbackQuery):
             if not self.ok(c.from_user.id):
@@ -187,6 +203,18 @@ class App:
         finally:
             task.cancel()
             await self.client.close()
+
+
+def _set_env(key: str, value: str, path: str = ".env"):
+    """Меняет одну строку в .env, остальное оставляет как есть."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        lines = []
+    lines = [l for l in lines if not l.strip().startswith(f"{key}=")] + [f"{key}={value}"]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def main():
