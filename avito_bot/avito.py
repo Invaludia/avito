@@ -284,12 +284,34 @@ class BrowserClient(AvitoClient):
             else:
                 raise last
         self._page = self._ctx.pages[0] if self._ctx.pages else await self._ctx.new_page()
+        self._ctx.on("close", lambda _: setattr(self, "_page", None))
+
+    async def _goto(self, url: str):
+        """Открывает страницу; если окно браузера закрыли, запускает браузер заново."""
+        for attempt in (1, 2):
+            if self._page is None or self._page.is_closed():
+                await self._shutdown()
+                await self._open()
+            try:
+                return await self._page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            except Exception as e:
+                if attempt == 2 or "closed" not in str(e).lower():
+                    raise
+                log.warning("Окно браузера закрыто, открываю заново")
+                self._page = None
+
+    async def _shutdown(self):
+        for obj, meth in ((self._ctx, "close"), (self._pw, "stop")):
+            if obj is not None:
+                try:
+                    await getattr(obj, meth)()
+                except Exception:
+                    pass
+        self._pw = self._ctx = self._page = None
 
     async def fetch(self, url: str) -> str:
         async with self._lock:
-            if self._page is None:
-                await self._open()
-            resp = await self._page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            resp = await self._goto(url)
             await self._page.wait_for_timeout(random.randint(1500, 3000))
             status = resp.status if resp else 0
             html = await self._page.content()
@@ -308,7 +330,7 @@ class BrowserClient(AvitoClient):
                 else:
                     raise Blocked(f"HTTP {status}, капча не решена")
                 if self._page.url.split("?")[0] != url.split("?")[0]:
-                    await self._page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                    await self._goto(url)
                     html = await self._page.content()
             await asyncio.sleep(random.uniform(self.min_delay, self.max_delay))
             return html
@@ -317,10 +339,7 @@ class BrowserClient(AvitoClient):
         pass  # профиль браузера не сбрасываем: cookies после капчи нам и нужны
 
     async def close(self):
-        if self._ctx is not None:
-            await self._ctx.close()
-        if self._pw is not None:
-            await self._pw.stop()
+        await self._shutdown()
 
 
 def parse_listings_safe(html: str) -> list[Listing]:

@@ -47,7 +47,22 @@ class App:
         return not self.allowed or user_id in self.allowed
 
     # ---------- клавиатуры ----------
+    @staticmethod
+    def _down(node: catalog.Node) -> catalog.Node:
+        """Уровни с единственной кнопкой пропускаем, чтобы не нажимать лишнее."""
+        while len(node.children) == 1 and not node.items:
+            node = next(iter(node.children.values()))
+        return node
+
+    def _up(self, node: catalog.Node) -> catalog.Node | None:
+        """Куда ведёт «Назад»: ближайший уровень, где есть выбор."""
+        p = node.parent
+        while p is not None and self._down(p) is node:
+            p = p.parent
+        return self._down(p) if p is not None else None
+
     def menu(self, node: catalog.Node) -> tuple[str, InlineKeyboardMarkup]:
+        node = self._down(node)
         rows, row = [], []
         for child in node.children.values():
             row.append(InlineKeyboardButton(text=child.title, callback_data=f"n:{child.id}"))
@@ -56,8 +71,9 @@ class App:
         if row: rows.append(row)
         if node.items and node.children:
             rows.insert(0, [InlineKeyboardButton(text=f"Объявления: {node.title}", callback_data=f"i:{node.id}")])
-        if node.parent:
-            rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"n:{node.parent.id}"),
+        up = self._up(node)
+        if up is not None:
+            rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"n:{up.id}"),
                          InlineKeyboardButton(text="В начало", callback_data="n:root")])
         title = " → ".join(node.path) or "Что ищем?"
         return html.escape(title), InlineKeyboardMarkup(inline_keyboard=rows)
@@ -93,7 +109,7 @@ class App:
             body += f"\n\n<i>Проверено {int((time.time() - min(checked)) // 60)} мин назад</i>"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"r:{node.id}")],
-            [InlineKeyboardButton(text="← Назад", callback_data=f"n:{node.parent.id}"),
+            [InlineKeyboardButton(text="← Назад", callback_data=f"n:{(self._up(node) or self.tree.root).id}"),
              InlineKeyboardButton(text="В начало", callback_data="n:root")],
         ])
         return head + body, kb
