@@ -145,10 +145,20 @@ def parse_settings(rows: list[list]) -> Settings:
 
 
 def _read_xlsx(path) -> tuple[list[list], list[list]]:
+    """Листы ищем по заголовкам, а не по названию: при импорте в Google названия могут поменяться."""
     from openpyxl import load_workbook
     wb = load_workbook(path, read_only=True, data_only=True)
-    cat = [list(r) for r in wb["Каталог"].iter_rows(values_only=True)]
-    st = [list(r) for r in wb["Настройки"].iter_rows(values_only=True)] if "Настройки" in wb.sheetnames else []
+    cat, st = None, []
+    for ws in wb.worksheets:
+        rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        head = [_norm(h).lower() for h in (rows[0] if rows else [])]
+        if cat is None and COL["model"] in head:
+            cat = rows
+        elif head[:1] == ["параметр"]:
+            st = rows
+    if cat is None:
+        names = ", ".join(wb.sheetnames)
+        raise RuntimeError(f"Не нашёл лист с колонкой «Модель (кнопка)». Листы в таблице: {names}")
     return cat, st
 
 
