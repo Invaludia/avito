@@ -25,7 +25,7 @@ class App:
         self.source = os.environ.get("CATALOG", "avito_catalog.xlsx")
         self.allowed = {int(x) for x in os.environ.get("ALLOWED_USERS", "").replace(" ", "").split(",") if x}
         self.db = DB(os.environ.get("DB_PATH", "avito.sqlite3"))
-        self.client = make_client(os.environ.get("BROWSER", "msedge"))
+        self.client = make_client(os.environ.get("BROWSER", "chrome"))
         self.bot = Bot(os.environ["BOT_TOKEN"])
         self.dp = Dispatcher()
         self.reload()

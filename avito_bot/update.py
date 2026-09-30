@@ -14,7 +14,7 @@ import zipfile
 from urllib.request import urlopen
 
 URL = "https://codeload.github.com/Invaludia/avito/zip/refs/heads/main"
-KEEP = {"run.bat", ".env", "avito.sqlite3", "browser_profile", "last_block.html", "bot.log", ".git"}
+KEEP = {"run.bat", ".env", "avito.sqlite3", "browser_profile", "browser_profile_chrome", "browser_profile_msedge", "last_block.html", "bot.log", ".git"}
 
 
 def main() -> int:

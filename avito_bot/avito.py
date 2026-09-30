@@ -222,7 +222,7 @@ class AvitoClient:
 
 
 class BrowserClient(AvitoClient):
-    """Открывает Авито в настоящем браузере (Edge есть на любом Windows).
+    """Открывает Авито в настоящем браузере: Chrome, а если его нет, Edge.
 
     Профиль браузера хранится в папке browser_profile, поэтому cookies живут между запусками.
     Если Авито покажет капчу, её можно решить прямо в окне браузера: бот подождёт.
@@ -230,7 +230,7 @@ class BrowserClient(AvitoClient):
 
     CAPTCHA_WAIT = 180  # секунд ждём, пока человек решит капчу в окне
 
-    def __init__(self, channel: str = "msedge", headless: bool = False, executable: str | None = None, **kw):
+    def __init__(self, channel: str = "chrome", headless: bool = False, executable: str | None = None, **kw):
         super().__init__(**kw)
         self.channel, self.headless, self.executable = channel, headless, executable
         self._pw = self._ctx = self._page = None
@@ -241,11 +241,23 @@ class BrowserClient(AvitoClient):
         self._pw = await async_playwright().start()
         opts = dict(headless=self.headless, locale="ru-RU", viewport={"width": 1280, "height": 900},
                     args=["--disable-blink-features=AutomationControlled"])
+        # Отдельный профиль в папке бота: твой обычный Chrome, вкладки и вход в аккаунты не трогаются
         if self.executable:
-            opts["executable_path"] = self.executable
+            self._ctx = await self._pw.chromium.launch_persistent_context(
+                "browser_profile", executable_path=self.executable, **opts)
         else:
-            opts["channel"] = self.channel
-        self._ctx = await self._pw.chromium.launch_persistent_context("browser_profile", **opts)
+            last = None
+            for ch in dict.fromkeys([self.channel, "chrome", "msedge"]):
+                try:
+                    self._ctx = await self._pw.chromium.launch_persistent_context(
+                        f"browser_profile_{ch}", channel=ch, **opts)
+                    log.info("Открываю Авито в браузере: %s", ch)
+                    break
+                except Exception as e:  # браузер не установлен — пробуем следующий
+                    last = e
+                    log.warning("Не удалось открыть %s: %s", ch, str(e).splitlines()[0])
+            else:
+                raise last
         self._page = self._ctx.pages[0] if self._ctx.pages else await self._ctx.new_page()
 
     async def fetch(self, url: str) -> str:
@@ -294,8 +306,8 @@ def parse_listings_safe(html: str) -> list[Listing]:
 
 
 def make_client(mode: str) -> AvitoClient:
-    """mode: msedge (по умолчанию), chrome или http (без браузера, быстро, но чаще блокируют)."""
-    mode = (mode or "msedge").strip().lower()
+    """mode: chrome (по умолчанию), msedge или http (без браузера, быстро, но чаще блокируют)."""
+    mode = (mode or "chrome").strip().lower()
     if mode == "http":
         return AvitoClient()
     headless = os.environ.get("HEADLESS", "0") == "1"
