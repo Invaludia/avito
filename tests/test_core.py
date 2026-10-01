@@ -208,3 +208,10 @@ def test_laptop_title():
 def test_numeric_section_cells():
     assert catalog._norm(30.0) == "30" and catalog._norm(30) == "30" and catalog._norm(" 30 ") == "30"
     assert catalog._norm(8.5) == "8.5"
+
+
+def test_merged_suffix():
+    from avito_bot.avito import _starts_word
+    assert _starts_word("palit rtx 3070ti gamingpro", "ti")
+    assert _starts_word("rtx3070ti", "ti")
+    assert not _starts_word("18gb", "8gb")

@@ -136,8 +136,11 @@ def _has_word(text: str, word: str) -> bool:
 
 
 def _starts_word(text: str, word: str) -> bool:
-    """Обязательное слово: начало слова. «12400» есть в «12400F», «8gb» не находится в «18gb»."""
-    return re.search(rf"(?<![a-zа-яё0-9]){re.escape(word.lower())}", text) is not None
+    """Обязательное слово: начало слова. «12400» есть в «12400F», «8gb» не находится в «18gb».
+    Буквенное слово может идти сразу за цифрами: «Ti» есть в «3070ti», «Super» в «4070Super»."""
+    w = word.lower()
+    before = "a-zа-яё" if w[:1].isalpha() else "a-zа-яё0-9"
+    return re.search(rf"(?<![{before}]){re.escape(w)}", text) is not None
 
 
 # Стоп-слово не считается, если перед ним отрицание: «без артефактов», «нет сколов», «не было ремонта»
